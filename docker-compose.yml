@@ -1,0 +1,241 @@
+version: "3.7"
+
+networks:
+  net:
+    driver: overlay
+
+configs:
+  dockerd_config:
+    file: /storage/nfs/configs/mon/dockerd-exporter/Caddyfile
+  prometheus_node_rules:
+    file: /storage/nfs/configs/mon/prometheus/rules/swarm_node.rules.yml
+  prometheus_task_rules:
+    file: /storage/nfs/configs/mon/prometheus/rules/swarm_task.rules.yml
+  prometheus_conf:
+    file: /storage/nfs/configs/mon/prometheus/conf/prometheus.yml
+  prometheus_conf_weave:
+    file: /storage/nfs/configs/mon/prometheus/conf/weave-cortex.yml
+  grafana_dashboard_node:
+    file: /storage/nfs/configs/mon/grafana/dashboards/swarmprom-nodes-dash.json
+  grafana_dashboard_serv:
+    file: /storage/nfs/configs/mon/grafana/dashboards/swarmprom-services-dash.json
+  grafana_datasource:
+    file: /storage/nfs/configs/mon/grafana/datasources/prometheus.yaml
+  grafana_dashboards:
+    file: /storage/nfs/configs/mon/grafana/swarmprom_dashboards.yml
+  grafana_conf:
+    file: /storage/nfs/configs/mon/grafana/conf/defaults.ini
+  grafana_conf_ldap:
+    file: /storage/nfs/configs/mon/grafana/conf/ldap.toml
+  alertmanager_conf:
+    file: /storage/nfs/configs/mon/alertmanager/conf/alertmanager.yml
+
+
+services:
+  dockerd-exporter:
+    image: stefanprodan/caddy
+    networks:
+      - net
+    environment:
+      - DOCKER_GWBRIDGE_IP=172.18.0.1
+    configs:
+      - source: dockerd_config
+        target: /etc/caddy/Caddyfile
+    deploy:
+      mode: global
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+    # logging:
+    #   driver: gelf
+    #   options:
+    #     gelf-address: "udp://10.80.0.5:12201"
+
+  cadvisor:
+    image: google/cadvisor
+    networks:
+      - net
+    command: -logtostderr -docker_only
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/rootfs:ro
+      - /var/run:/var/run
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    deploy:
+      mode: global
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+    # logging:
+    #   driver: gelf
+    #   options:
+    #     gelf-address: "udp://10.80.0.5:12201"
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    networks:
+      - net
+    environment:
+      # - GF_SECURITY_ADMIN_USER=${ADMIN_USER:-admin}
+      # - GF_SECURITY_ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning/
+    volumes:
+      - /storage/nfs/configs/mon/grafana/dashboards:/etc/grafana/dashboards
+      - /storage/nfs/data/grafana:/var/lib/grafana
+      - /storage/nfs/logs/grafana:/var/log/grafana
+    configs:
+      # - source: grafana_dashboard_node
+      #   target: /etc/grafana/dashboards/swarmprom-nodes-dash.json
+      # - source: grafana_dashboard_serv
+      #   target: /etc/grafana/dashboards/swarmprom-services-dash.json
+      - source: grafana_datasource
+        target: /etc/grafana/provisioning/datasources/prometheus.yaml
+      - source: grafana_dashboards
+        target: /etc/grafana/provisioning/dashboards/swarmprom_dashboards.yml
+      - source: grafana_conf
+        target: /usr/share/grafana/conf/defaults.ini
+      - source: grafana_conf_ldap
+        target: /usr/share/grafana/conf/ldap.toml
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+    # logging:
+    #   driver: gelf
+    #   options:
+    #     gelf-address: "udp://10.80.0.5:12201"
+
+  alertmanager:
+    image: prom/alertmanager
+    ports:
+      - "9093:9093"
+    networks:
+      - net
+    # environment:
+    #   - SLACK_URL=${SLACK_URL:-https://hooks.slack.com/services/TOKEN}
+    #   - SLACK_CHANNEL=${SLACK_CHANNEL:-general}
+    #   - SLACK_USER=${SLACK_USER:-alertmanager}
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - --web.external-url=http://10.80.0.5/alertmanager
+    configs:
+      - source: alertmanager_conf
+        target: /etc/alertmanager/alertmanager.yml
+    volumes:
+      - /storage/nfs/data/alertmanager:/alertmanager
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+    # logging:
+    #   driver: gelf
+    #   options:
+    #     gelf-address: "udp://10.80.0.5:12201"
+
+  unsee:
+    image: cloudflare/unsee
+    ports:
+      - "9094:8080"
+    networks:
+      - net
+    environment:
+      - "ALERTMANAGER_URI=http://10.80.0.5/alertmanager"
+    deploy:
+      mode: replicated
+      replicas: 1
+    # logging:
+    #   driver: gelf
+    #   options:
+    #     gelf-address: "udp://10.80.0.5:12201"
+
+  node-exporter:
+    image: stefanprodan/swarmprom-node-exporter:v0.16.0
+    networks:
+      - net
+    environment:
+      - NODE_ID={{.Node.ID}}
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - /etc/hostname:/etc/nodename
+    command:
+      - '--path.sysfs=/host/sys'
+      - '--path.procfs=/host/proc'
+      - '--collector.textfile.directory=/etc/node-exporter/'
+      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+      - '--no-collector.ipvs'
+    deploy:
+      mode: global
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+    # logging:
+    #   driver: gelf
+    #   options:
+    #     gelf-address: "udp://10.80.0.5:12201"
+
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - net
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - --web.external-url=http://10.80.0.5/prometheus/
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention=${PROMETHEUS_RETENTION:-24h}'
+    volumes:
+      - /storage/nfs/data/prometheus:/prometheus
+    configs:
+      - source: prometheus_node_rules
+        target: /etc/prometheus/swarm_node.rules.yml
+      - source: prometheus_task_rules
+        target: /etc/prometheus/swarm_task.rules.yml
+      - source: prometheus_conf
+        target: /etc/prometheus/prometheus.yml
+      - source: prometheus_conf_weave
+        target: /etc/prometheus/weave-cortex.yml
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          memory: 2048M
+        reservations:
+          memory: 128M
+    # logging:
+    #   driver: gelf
+    #   options:
+    #     gelf-address: "udp://10.80.0.5:12201"
+
+        

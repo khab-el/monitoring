@@ -1,0 +1,74 @@
+version: "3.7"
+
+networks:
+  net:
+    driver: overlay
+
+configs:
+  dockerd_config:
+    file: /storage/nfs/configs/mon/dockerd-exporter/Caddyfile
+  prometheus_node_rules:
+    file: /storage/nfs/configs/mon/prometheus/rules/swarm_node.rules.yml
+  prometheus_task_rules:
+    file: /storage/nfs/configs/mon/prometheus/rules/swarm_task.rules.yml
+  prometheus_conf:
+    file: /storage/nfs/configs/mon/prometheus/conf/prometheus.yml
+  prometheus_conf_weave:
+    file: /storage/nfs/configs/mon/prometheus/conf/weave-cortex.yml
+  grafana_dashboard_node:
+    file: /storage/nfs/configs/mon/grafana/dashboards/swarmprom-nodes-dash.json
+  grafana_dashboard_prom:
+    file: /storage/nfs/configs/mon/grafana/dashboards/swarmprom-prometheus-dash.json
+  grafana_dashboard_serv:
+    file: /storage/nfs/configs/mon/grafana/dashboards/swarmprom-services-dash.json
+  grafana_datasource:
+    file: /storage/nfs/configs/mon/grafana/datasources/prometheus.yaml
+  grafana_dashboards:
+    file: /storage/nfs/configs/mon/grafana/swarmprom_dashboards.yml
+  grafana_conf:
+    file: /storage/nfs/configs/mon/grafana/conf/defaults.ini
+  grafana_conf_ldap:
+    file: /storage/nfs/configs/mon/grafana/conf/ldap.toml
+
+services:
+  grafana:
+    image: grafana/grafana:latest
+    networks:
+      - net
+    ports:
+      - 3000:3000
+    environment:
+      - GF_SECURITY_ADMIN_USER=${ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning/
+    volumes:
+      - /storage/nfs/configs/mon/grafana/dashboards:/etc/grafana/dashboards
+      - /storage/nfs/configs/mon/grafana/data:/var/lib/grafana
+      - /storage/nfs/logs/grafana:/var/log/grafana
+    configs:
+      # - source: grafana_dashboard_node
+      #   target: /etc/grafana/dashboards/swarmprom-nodes-dash.json
+      # - source: grafana_dashboard_prom
+      #   target: /etc/grafana/dashboards/swarmprom-prometheus-dash.json
+      # - source: grafana_dashboard_serv
+      #   target: /etc/grafana/dashboards/swarmprom-services-dash.json
+      - source: grafana_datasource
+        target: /etc/grafana/provisioning/datasources/prometheus.yaml
+      - source: grafana_dashboards
+        target: /etc/grafana/provisioning/dashboards/swarmprom_dashboards.yml
+      # - source: grafana_conf
+      #   target: /usr/share/grafana/conf/defaults.ini
+      # - source: grafana_conf_ldap
+      #   target: /usr/share/grafana/conf/ldap.toml
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
